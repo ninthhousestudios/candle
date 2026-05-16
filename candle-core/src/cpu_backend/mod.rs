@@ -1317,6 +1317,26 @@ impl Map2 for ConvTranspose2D<'_> {
 
 struct MatMul((usize, usize, usize, usize));
 
+#[cfg(any(feature = "accelerate", feature = "mkl"))]
+/// Safety: T must actually be bf16 (checked via T::DTYPE == DType::BF16 at call sites).
+unsafe fn slice_as_bf16<T>(data: &[T]) -> &[bf16] {
+    std::slice::from_raw_parts(data.as_ptr() as *const bf16, data.len())
+}
+
+#[cfg(any(feature = "accelerate", feature = "mkl"))]
+fn bf16_to_f32<T: WithDType>(data: &[T]) -> Vec<f32> {
+    debug_assert_eq!(T::DTYPE, DType::BF16);
+    unsafe { slice_as_bf16(data) }.to_f32_vec()
+}
+
+#[cfg(any(feature = "accelerate", feature = "mkl"))]
+fn f32_as_bf16_dst<T: WithDType + Copy>(src: &[f32], dst: &mut [T]) {
+    debug_assert_eq!(T::DTYPE, DType::BF16);
+    let dst_bf16: &mut [bf16] =
+        unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut bf16, dst.len()) };
+    dst_bf16.convert_from_f32_slice(src);
+}
+
 impl MatMul {
     fn striding_error(&self, lhs_l: &Layout, rhs_l: &Layout, msg: &'static str) -> Error {
         Error::MatMulUnexpectedStriding(Box::new(crate::error::MatMulUnexpectedStriding {
@@ -1481,14 +1501,8 @@ impl Map2 for MatMul {
         let mut dst = vec![T::zero(); b * m * n];
         match T::DTYPE {
             DType::BF16 => {
-                let lhs_bf16: &[bf16] = unsafe {
-                    std::slice::from_raw_parts(lhs.as_ptr() as *const bf16, lhs.len())
-                };
-                let rhs_bf16: &[bf16] = unsafe {
-                    std::slice::from_raw_parts(rhs.as_ptr() as *const bf16, rhs.len())
-                };
-                let lhs_f32 = lhs_bf16.to_f32_vec();
-                let rhs_f32 = rhs_bf16.to_f32_vec();
+                let lhs_f32 = bf16_to_f32(lhs);
+                let rhs_f32 = bf16_to_f32(rhs);
                 let mut dst_f32 = vec![0f32; b * m * n];
                 for step in 0..b {
                     let a = &rhs_f32[step * b_skip..];
@@ -1503,10 +1517,7 @@ impl Map2 for MatMul {
                         )
                     }
                 }
-                let dst_bf16: &mut [bf16] = unsafe {
-                    std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut bf16, dst.len())
-                };
-                dst_bf16.convert_from_f32_slice(&dst_f32);
+                f32_as_bf16_dst(&dst_f32, &mut dst);
             }
             DType::F16 => {
                 crate::bail!("the accelerate backend does not support f16 matmul")
@@ -1600,14 +1611,8 @@ impl Map2 for MatMul {
         let mut dst = vec![T::zero(); b * m * n];
         match T::DTYPE {
             DType::BF16 => {
-                let lhs_bf16: &[bf16] = unsafe {
-                    std::slice::from_raw_parts(lhs.as_ptr() as *const bf16, lhs.len())
-                };
-                let rhs_bf16: &[bf16] = unsafe {
-                    std::slice::from_raw_parts(rhs.as_ptr() as *const bf16, rhs.len())
-                };
-                let lhs_f32 = lhs_bf16.to_f32_vec();
-                let rhs_f32 = rhs_bf16.to_f32_vec();
+                let lhs_f32 = bf16_to_f32(lhs);
+                let rhs_f32 = bf16_to_f32(rhs);
                 let mut dst_f32 = vec![0f32; b * m * n];
                 for step in 0..b {
                     let a = &rhs_f32[step * b_skip..];
@@ -1622,10 +1627,7 @@ impl Map2 for MatMul {
                         )
                     }
                 }
-                let dst_bf16: &mut [bf16] = unsafe {
-                    std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut bf16, dst.len())
-                };
-                dst_bf16.convert_from_f32_slice(&dst_f32);
+                f32_as_bf16_dst(&dst_f32, &mut dst);
             }
             DType::F16 => {
                 for step in 0..b {
